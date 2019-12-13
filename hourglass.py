@@ -19,10 +19,11 @@ class Residual(torch.nn.Module):
         self.conv2 = torch.nn.Conv2d(out_channels, out_channels, kernel_size, stride=1, padding=padding, bias=False)
         self.bnrm2 = torch.nn.BatchNorm2d(out_channels)
         
+        skip = []
         if stride != 1 or in_channels != out_channels:
-            self.skip = torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, padding=0, bias=False)
-        else:
-            self.skip = torch.nn.Sequential()
+            skip  = [torch.nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride, padding=0, bias=False)]
+            skip += [torch.nn.BatchNorm2d(out_channels)]
+        self.skip = torch.nn.Sequential(*skip)
         
         self.relu = torch.nn.ReLU(inplace=True)
     
@@ -50,6 +51,10 @@ class Hourglass(torch.nn.Module):
         mid_channels = num_features[1]  # middle block IO channels
         ios_repeats = repeats[0]        # repeats of input, output and skip residual blocks
         mid_repeats = repeats[1]        # repeats of middle residual blocks
+
+        # skip residual blocks
+        self.skip = [Residual(ios_channels, ios_channels) for _ in range(ios_repeats)]
+        self.skip = torch.nn.Sequential(*self.skip)
         
         # input residual blocks
         self.input  = [Residual(ios_channels, mid_channels, stride=2)]
@@ -64,15 +69,11 @@ class Hourglass(torch.nn.Module):
             self.middle = torch.nn.Sequential(*self.middle)
         
         # output residual blocks
-        self.output  = [Residual(mid_channels, ios_channels) for _ in range(ios_repeats-1)]
-        self.output += [Residual(ios_channels, ios_channels)]
+        self.output  = [Residual(mid_channels, mid_channels) for _ in range(ios_repeats-1)]
+        self.output += [Residual(mid_channels, ios_channels)]
         self.output += [Upsample(scale_factor=2)]
         self.output  = torch.nn.Sequential(*self.output)
-        
-        # skip residual blocks
-        self.skip = [Residual(ios_channels, ios_channels) for _ in range(ios_repeats)]
-        self.skip = torch.nn.Sequential(*self.skip)
-        
+               
     def forward(self, x):
         y = self.input(x)
         y = self.middle(y)
