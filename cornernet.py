@@ -115,68 +115,61 @@ class CornerDecoder(torch.nn.Module):
     def forward(self, x):
         tl_heat, br_heat, tl_embd, br_embd, tl_offs, br_offs = x
         
-        tl_heat = torch.sigmoid(tl_heat)    # 1 * classes * netw/4 * neth/4
+        tl_heat = torch.sigmoid(tl_heat)
         br_heat = torch.sigmoid(br_heat)        
         tl_heat = self.__nms(tl_heat, kernel_size=3)
-        br_heat = self.__nms(br_heat, kernel_size=3)
-        
+        br_heat = self.__nms(br_heat, kernel_size=3)        
         tl_scores, tl_cs, tl_ys, tl_xs = self.__topk(tl_heat, self.K)
         br_scores, br_cs, br_ys, br_xs = self.__topk(br_heat, self.K)
         
-        tl_tags = tl_embd[0][0, tl_ys, tl_xs]  
-        br_tags = br_embd[0][0, br_ys, br_xs]
-        
-        tl_biases = tl_offs[0][:, tl_ys, tl_xs]
-        br_biases = br_offs[0][:, br_ys, br_xs]
-        
-        tl_ys = tl_ys.int().float()
-        tl_xs = tl_xs.int().float()
-        br_ys = br_ys.int().float()
-        br_xs = br_xs.int().float()
-        
-        tl_ys += tl_biases[1]
-        tl_xs += tl_biases[0]
-        br_ys += br_biases[1]
-        br_xs += br_biases[0]
-        
-        tl_ys = tl_ys.view(-1, 1).expand(self.K, self.K).contiguous().view(1, -1)
-        tl_xs = tl_xs.view(-1, 1).expand(self.K, self.K).contiguous().view(1, -1)
-        br_ys = br_ys.expand(self.K, self.K).contiguous().view(1, -1)
-        br_xs = br_xs.expand(self.K, self.K).contiguous().view(1, -1)        
-        
         # reject object based on embedding distance
-        tl_tags = tl_tags.view(-1, 1).expand(self.K, self.K).contiguous().view(1, -1)
-        br_tags = br_tags.expand(self.K, self.K).contiguous().view(1, -1)
+        tl_tags = tl_embd[0][0, tl_ys, tl_xs]  
+        br_tags = br_embd[0][0, br_ys, br_xs]        
+        tl_tags = tl_tags.view(-1, 1).expand(self.K, self.K).contiguous().view(-1)
+        br_tags = br_tags.expand(self.K, self.K).contiguous().view(-1)
         dists = torch.abs(tl_tags - br_tags)
         dist_ids = dists > self.ae_thresh
         
-        tl_scores = tl_scores.view(-1, 1).expand(self.K, self.K).contiguous().view(1, -1)
-        br_scores = br_scores.expand(self.K, self.K).contiguous().view(1, -1)
-        scores = (tl_scores + br_scores) / 2
-        
-        # reject object based on class index
-        tl_cs = tl_cs.view(-1, 1).expand(self.K, self.K).contiguous().view(1, -1)
-        br_cs = br_cs.expand(self.K, self.K).contiguous().view(1, -1)
-        class_ids = tl_cs != br_cs
-        
         # reject object based on size
+        tl_biases = tl_offs[0][:, tl_ys, tl_xs]
+        br_biases = br_offs[0][:, br_ys, br_xs]        
+        tl_ys = tl_ys.int().float() + tl_biases[1]
+        tl_xs = tl_xs.int().float() + tl_biases[0]
+        br_ys = br_ys.int().float() + br_biases[1]
+        br_xs = br_xs.int().float() + br_biases[0]        
+        tl_ys = tl_ys.view(-1, 1).expand(self.K, self.K).contiguous().view(-1)
+        tl_xs = tl_xs.view(-1, 1).expand(self.K, self.K).contiguous().view(-1)
+        br_ys = br_ys.expand(self.K, self.K).contiguous().view(-1)
+        br_xs = br_xs.expand(self.K, self.K).contiguous().view(-1)       
         width_ids = tl_xs > br_xs
         height_ids = tl_ys > br_ys
+                        
+        # reject object based on class index
+        tl_cs = tl_cs.view(-1, 1).expand(self.K, self.K).contiguous().view(-1)
+        br_cs = br_cs.expand(self.K, self.K).contiguous().view(-1)
+        class_ids = tl_cs != br_cs
         
+        tl_scores = tl_scores.view(-1, 1).expand(self.K, self.K).contiguous().view(-1)
+        br_scores = br_scores.expand(self.K, self.K).contiguous().view(-1)
+        scores = (tl_scores + br_scores) / 2
         scores[dist_ids]   = -1
         scores[class_ids]  = -1
         scores[width_ids]  = -1
         scores[height_ids] = -1
         
         scores, indices = torch.topk(scores, self.num_dets)
-        bboxes = torch.cat((tl_xs[0,indices], tl_ys[0,indices], br_xs[0,indices], br_ys[0,indices]), dim=0)
+        bboxes = torch.stack((tl_xs[indices], tl_ys[indices], br_xs[indices], br_ys[indices]), dim=1)
+        classes = tl_cs[indices].view(-1, 1).float()
+        tl_scores = tl_scores[indices].view(-1, 1)
+        br_scores = br_scores[indices].view(-1, 1)
+        detections = torch.cat((bboxes, scores.view(-1, 1), tl_scores, br_scores, classes), dim=1)
         
-        print(f'bboxes size {bboxes.size()}')
         print(f'{tl_xs.size()} {tl_ys.size()} {br_xs.size()} {br_ys.size()}')
         print(f'{tl_tags.size()} {br_tags.size()}')
         print(f'{dist_ids.size()} {class_ids.size()} {width_ids.size()} {height_ids.size()}')
-        
-        return None
+        print(f'{bboxes.size()} {scores.size()} {tl_scores.size()} {br_scores.size()} {classes.size()} {detections.size()}')
+
+        return detections
 
     def __nms(self, x, kernel_size=3):
         padding = (kernel_size - 1) // 2
@@ -196,19 +189,11 @@ class CornerDecoder(torch.nn.Module):
 
 if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    x = torch.load('model/dog.pth')
+    x = torch.rand(1, 3, 511, 767).to(device)
     net = CornerNet().to(device)
-    net.load_state_dict(torch.load('model/cornernet.pth'))
-    net.eval()
-    print(net)
+    net.eval()    
     ys = net(x)
+    print(net)
     print(f'net input size {x.size()}')
     for y in ys:
         print(f'net output size {y.size()}')
-    
-    refr = torch.load('model/net_output.pth')
-    for r, t in zip(refr, ys):
-        print(f'reference output is equal to test output? {torch.equal(r, t)}')
-    
-    decoder = CornerDecoder()
-    zs = decoder(ys)

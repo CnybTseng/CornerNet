@@ -7,6 +7,7 @@
 import sys
 import torch
 import argparse
+sys.path.append('.')
 import cornernet
 
 def get_data(it, size):
